@@ -13,6 +13,8 @@ def init_session_state():
         st.session_state.messages = []
     if "conversation_started" not in st.session_state:
         st.session_state.conversation_started = False
+    if "total_tokens" not in st.session_state:
+        st.session_state.total_tokens = 0
 
 def extract_thinking_and_response(text: str) -> tuple[str | None, str]:
     """Extract thinking process and response from the text"""
@@ -27,7 +29,7 @@ def extract_thinking_and_response(text: str) -> tuple[str | None, str]:
     
     return None, text
 
-def get_ollama_response(prompt: str) -> Iterator[str]:
+def get_ollama_response(prompt: str) -> Iterator[tuple[str, dict]]:
     """Get streaming response from Ollama API"""
     response = requests.post(
         "http://localhost:11434/api/generate",
@@ -42,13 +44,59 @@ def get_ollama_response(prompt: str) -> Iterator[str]:
     for line in response.iter_lines():
         if line:
             json_response = json.loads(line)
-            if not json_response.get("done"):
-                yield json_response.get("response", "")
+            if json_response.get("done"):
+                # Return the final stats
+                yield "", json_response
+            else:
+                # Return the response chunk and empty stats
+                yield json_response.get("response", ""), {}
 
 def display_thinking_section(thinking: str):
     """Display thinking process in a collapsible section"""
     with st.expander("💭 Show thinking process"):
         st.markdown(thinking)
+
+def calculate_energy_consumption(num_tokens: int) -> float:
+    """Calculate energy consumption in gigajoules based on token usage"""
+    power_watts = 35  # Power consumption under load in watts
+    runtime_per_token = 0.02  # Runtime per token in seconds
+    
+    total_runtime = runtime_per_token * num_tokens  # Total runtime in seconds
+    total_energy_joules = power_watts * total_runtime  # Energy in joules
+    energy_gj = total_energy_joules / 1e9  # Convert joules to gigajoules
+    return energy_gj
+
+def display_token_counter():
+    """Display token counter and energy consumption in the sidebar"""
+    st.sidebar.markdown("### Usage Metrics")
+    
+    # Token counter
+    st.sidebar.metric(
+        "Total Tokens Used",
+        f"{st.session_state.total_tokens:,}",
+        help="Total number of tokens processed by the model"
+    )
+    
+    # Energy consumption
+    energy_gj = calculate_energy_consumption(st.session_state.total_tokens)
+    st.sidebar.metric(
+        "Energy Consumption",
+        f"{energy_gj:.6f} GJ",
+        help=(
+            "Estimated energy consumption based on:\n"
+            "• 35W power consumption\n"
+            "• 0.02s processing time per token"
+        )
+    )
+    
+    # Add equivalent metrics for context
+    if energy_gj > 0:
+        energy_kwh = energy_gj * 277.778  # Convert GJ to kWh
+        st.sidebar.caption(
+            f"Equivalent to:\n"
+            f"• {energy_kwh:.2f} kWh of electricity\n"
+            f"• Running a 60W light bulb for {(energy_kwh/0.06):.1f} hours"
+        )
 
 def main():
     # Page config
@@ -109,6 +157,9 @@ def main():
         with st.chat_message(message["role"]):
             st.write(message["content"])
 
+    # Display token counter
+    display_token_counter()
+
     # Chat input
     if prompt := st.chat_input("Send a message"):
         # Add user message to chat
@@ -122,19 +173,25 @@ def main():
             thinking_displayed = False
             
             # Stream the response
-            for response_chunk in get_ollama_response(prompt):
-                full_response += response_chunk
-                
-                # Extract thinking and response
-                thinking, current_response = extract_thinking_and_response(full_response)
-                
-                # Display thinking section if found and not already displayed
-                if thinking and not thinking_displayed:
-                    display_thinking_section(thinking)
-                    thinking_displayed = True
-                
-                # Display the response without think tags
-                message_placeholder.write(current_response + "▌")
+            for response_chunk, stats in get_ollama_response(prompt):
+                if response_chunk:
+                    full_response += response_chunk
+                    
+                    # Extract thinking and response
+                    thinking, current_response = extract_thinking_and_response(full_response)
+                    
+                    # Display thinking section if found and not already displayed
+                    if thinking and not thinking_displayed:
+                        display_thinking_section(thinking)
+                        thinking_displayed = True
+                    
+                    # Display the response without think tags
+                    message_placeholder.write(current_response + "▌")
+                elif stats:
+                    # Update token count from final stats
+                    if "prompt_eval_count" in stats:
+                        st.session_state.total_tokens += stats["prompt_eval_count"]
+                        display_token_counter()
             
             # Final update without cursor
             thinking, final_response = extract_thinking_and_response(full_response)
