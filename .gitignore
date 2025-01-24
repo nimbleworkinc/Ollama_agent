@@ -169,3 +169,12 @@ cython_debug/
 
 # PyPI configuration file
 .pypirc
+
+# Streamlit
+.streamlit/
+
+# VSCode
+.vscode/
+
+# macos
+.DS_Store
